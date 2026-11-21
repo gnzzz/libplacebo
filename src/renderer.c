@@ -2709,6 +2709,38 @@ static uint8_t plane_comps(const struct pl_plane *plane,
     return comps;
 }
 
+static void encode_target(struct pass_state *pass, pl_shader sh,
+                          const struct pl_color_repr *repr,
+                          struct pl_color_space *color)
+{
+    const struct pl_frame *target = &pass->target;
+    pl_renderer rr = pass->rr;
+
+    enum pl_lut_type lut_type = guess_frame_lut_type(target, true);
+    if (lut_type != PL_LUT_CONVERSION) {
+        if (repr->sys == PL_COLOR_SYSTEM_XYZ &&
+            color->transfer != PL_COLOR_TRC_LINEAR)
+        {
+            // XYZ is encoded in linear light
+            pl_shader_linearize(sh, color);
+            color->transfer = PL_COLOR_TRC_LINEAR;
+        }
+
+        pl_shader_encode_color_ex(sh, pl_color_encode_args(
+            .repr      = repr,
+            .primaries = target->color.primaries,
+        ));
+
+        if (repr->sys == PL_COLOR_SYSTEM_XYZ) {
+            // Apply the target transfer function (e.g. ST 428-1) to the XYZ
+            pl_shader_delinearize(sh, &target->color);
+            color->transfer = target->color.transfer;
+        }
+    }
+    if (lut_type == PL_LUT_NATIVE)
+        pl_shader_custom_lut(sh, target->lut, &rr->lut_state[LUT_TARGET]);
+}
+
 static void clear_target(struct pass_state *pass, const pl_tex background,
                          float bg_scale, const struct pl_render_params *params)
 {
@@ -3018,29 +3050,7 @@ static bool pass_output_target(struct pass_state *pass)
         pl_shader_set_alpha(sh, &img->repr, PL_ALPHA_INDEPENDENT);
     }
 
-    enum pl_lut_type lut_type = guess_frame_lut_type(target, true);
-    if (lut_type != PL_LUT_CONVERSION) {
-        if (repr.sys == PL_COLOR_SYSTEM_XYZ &&
-            img->color.transfer != PL_COLOR_TRC_LINEAR)
-        {
-            // XYZ is encoded in linear light
-            pl_shader_linearize(sh, &img->color);
-            img->color.transfer = PL_COLOR_TRC_LINEAR;
-        }
-
-        pl_shader_encode_color_ex(sh, pl_color_encode_args(
-            .repr      = &repr,
-            .primaries = target->color.primaries,
-        ));
-
-        if (repr.sys == PL_COLOR_SYSTEM_XYZ) {
-            // Apply the target transfer function (e.g. ST 428-1) to the XYZ
-            pl_shader_delinearize(sh, &target->color);
-            img->color.transfer = target->color.transfer;
-        }
-    }
-    if (lut_type == PL_LUT_NATIVE)
-        pl_shader_custom_lut(sh, target->lut, &rr->lut_state[LUT_TARGET]);
+    encode_target(pass, sh, &repr, &img->color);
 
     // Rotation handling
     if (pass->rotation % PL_ROTATION_180 == PL_ROTATION_90) {
